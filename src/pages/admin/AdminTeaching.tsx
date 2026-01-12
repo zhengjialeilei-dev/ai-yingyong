@@ -141,7 +141,7 @@ const AdminTeaching = () => {
         if (resource.file_url?.includes('supabase')) {
           const filePath = resource.file_url.split('/teaching/')[1];
           if (filePath) {
-            await supabase.storage.from('TEACHING').remove([decodeURIComponent(filePath)]);
+            await supabase.storage.from('teaching').remove([decodeURIComponent(filePath)]);
           }
         }
 
@@ -284,7 +284,7 @@ const AdminTeaching = () => {
         else if (['ppt', 'pptx'].includes(fileExt)) contentType = 'application/vnd.ms-powerpoint';
         
         const { error: uploadError } = await supabase.storage
-          .from('TEACHING')
+          .from('teaching')
           .upload(fileName, uploadFile, {
             contentType,
             cacheControl: '3600'
@@ -293,7 +293,7 @@ const AdminTeaching = () => {
         if (uploadError) throw uploadError;
 
         const { data: { publicUrl } } = supabase.storage
-          .from('TEACHING')
+          .from('teaching')
           .getPublicUrl(fileName);
 
         const { error: dbError } = await supabase.from('teaching_resources').insert({
