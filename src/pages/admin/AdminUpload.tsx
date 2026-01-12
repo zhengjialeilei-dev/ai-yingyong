@@ -33,7 +33,9 @@ const TEACHING_ZONES = [
   { id: 'textbook', label: '课本' },
   { id: 'plan', label: '教案' },
   { id: 'courseware', label: '课件' },
-] as const;
+];
+
+type TeachingZoneId = 'standard' | 'textbook' | 'plan' | 'courseware';
 
 type Section = 'ai' | 'tools' | 'teaching';
 
