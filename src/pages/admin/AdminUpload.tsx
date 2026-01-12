@@ -1,16 +1,22 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import {
   AlertCircle,
   ArrowLeft,
   CheckCircle,
+  Edit3,
   FileText,
+  FolderOpen,
   GraduationCap,
   ImageDown,
   Loader2,
   Lock,
+  Pencil,
+  Plus,
   Sparkles,
+  Trash2,
   Upload,
+  X,
   Zap,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -35,9 +41,31 @@ const TEACHING_ZONES = [
   { id: 'courseware', label: '课件' },
 ];
 
-type TeachingZoneId = 'standard' | 'textbook' | 'plan' | 'courseware';
-
 type Section = 'ai' | 'tools' | 'teaching';
+type Mode = 'upload' | 'manage';
+
+interface Resource {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  grade: string;
+  image_url: string;
+  file_path?: string;
+  route_path?: string;
+  resource_type?: string;
+  created_at?: string;
+}
+
+interface TeachingResource {
+  id: string;
+  title: string;
+  description: string;
+  zone: string;
+  file_url: string;
+  file_type: string;
+  created_at?: string;
+}
 
 const getSafeFileName = (originalName: string) => {
   const ext = originalName.split('.').pop() || '';
@@ -52,9 +80,24 @@ const AdminUpload = () => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
 
+  const [mode, setMode] = useState<Mode>('upload');
   const [section, setSection] = useState<Section>('ai');
   const [loading, setLoading] = useState(false);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  // Resources list
+  const [resources, setResources] = useState<Resource[]>([]);
+  const [teachingResources, setTeachingResources] = useState<TeachingResource[]>([]);
+  const [listLoading, setListLoading] = useState(false);
+
+  // Delete confirmation
+  const [deleteTarget, setDeleteTarget] = useState<{ type: 'resource' | 'teaching'; item: Resource | TeachingResource } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  // Edit modal
+  const [editTarget, setEditTarget] = useState<{ type: 'resource' | 'teaching'; item: Resource | TeachingResource } | null>(null);
+  const [editForm, setEditForm] = useState<any>({});
+  const [saving, setSaving] = useState(false);
 
   // AI赋能（HTML）
   const [aiForm, setAiForm] = useState({
@@ -85,10 +128,46 @@ const AdminUpload = () => {
   const [teachingFile, setTeachingFile] = useState<File | null>(null);
 
   const header = useMemo(() => {
-    if (section === 'ai') return { title: 'AI赋能上传（HTML）', desc: '上传 AI 教学应用 HTML + 封面' };
-    if (section === 'tools') return { title: '互动工具上传（HTML）', desc: '上传课堂互动 HTML 工具 + 封面' };
-    return { title: '教学专区上传（文档）', desc: '上传 PDF / Word / PPT 到课标/课本/教案/课件' };
+    if (section === 'ai') return { title: 'AI赋能', desc: 'AI 教学应用 HTML + 封面', color: 'violet' };
+    if (section === 'tools') return { title: '互动工具', desc: '课堂互动 HTML 工具 + 封面', color: 'amber' };
+    return { title: '教学专区', desc: 'PDF / Word / PPT 资料', color: 'sky' };
   }, [section]);
+
+  // Fetch resources when in manage mode
+  useEffect(() => {
+    if (mode === 'manage' && isAuthenticated) {
+      fetchResources();
+    }
+  }, [mode, section, isAuthenticated]);
+
+  const fetchResources = async () => {
+    setListLoading(true);
+    try {
+      if (section === 'teaching') {
+        const { data, error } = await supabase
+          .from('teaching_resources')
+          .select('*')
+          .order('created_at', { ascending: false });
+        if (error) throw error;
+        setTeachingResources(data || []);
+      } else {
+        const { data, error } = await supabase
+          .from('resources')
+          .select('*')
+          .order('created_at', { ascending: false });
+        if (error) throw error;
+        // Filter based on section
+        const filtered = section === 'ai'
+          ? (data || []).filter(r => r.category !== '赋能教学')
+          : (data || []).filter(r => r.category === '赋能教学');
+        setResources(filtered);
+      }
+    } catch (err: any) {
+      console.error('获取资源列表失败:', err);
+    } finally {
+      setListLoading(false);
+    }
+  };
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -107,7 +186,6 @@ const AdminUpload = () => {
   }): Promise<any> => {
     const { title, description, category, grade, htmlFile, coverFile } = params;
 
-    // 1) HTML -> ai-apps/apps/
     const htmlKey = `apps/${getSafeFileName(htmlFile.name)}`;
     const { error: htmlError } = await supabase.storage.from('ai-apps').upload(htmlKey, htmlFile, {
       contentType: 'text/html',
@@ -116,7 +194,6 @@ const AdminUpload = () => {
     if (htmlError) throw htmlError;
     const { data: htmlPub } = supabase.storage.from('ai-apps').getPublicUrl(htmlKey);
 
-    // 2) cover -> webp -> ai-apps/images/
     const { blob, fileName } = await compressImage(coverFile, { maxWidth: 640, quality: 0.85, format: 'webp' });
     const imgKey = `images/${fileName}`;
     const { error: imgError } = await supabase.storage.from('ai-apps').upload(imgKey, blob, {
@@ -126,7 +203,6 @@ const AdminUpload = () => {
     if (imgError) throw imgError;
     const { data: imgPub } = supabase.storage.from('ai-apps').getPublicUrl(imgKey);
 
-    // 3) insert -> resources
     const { data: insertedData, error: dbError } = await supabase.from('resources').insert({
       title,
       description,
@@ -137,11 +213,8 @@ const AdminUpload = () => {
       resource_type: 'html',
       route_path: null,
     }).select();
-    if (dbError) {
-      console.error('数据库插入错误:', dbError);
-      throw new Error(`数据库写入失败: ${dbError.message || '未知错误'}`);
-    }
-    return insertedData?.[0]; // 返回插入的数据
+    if (dbError) throw new Error(`数据库写入失败: ${dbError.message || '未知错误'}`);
+    return insertedData?.[0];
   };
 
   const uploadTeachingDoc = async (params: {
@@ -173,11 +246,8 @@ const AdminUpload = () => {
       file_url: pub.publicUrl,
       file_type: ext,
     }).select();
-    if (dbErr) {
-      console.error('数据库插入错误:', dbErr);
-      throw new Error(`数据库写入失败: ${dbErr.message || '未知错误'}`);
-    }
-    return insertedData?.[0]; // 返回插入的数据
+    if (dbErr) throw new Error(`数据库写入失败: ${dbErr.message || '未知错误'}`);
+    return insertedData?.[0];
   };
 
   const resetSuccessLater = () => setTimeout(() => setSuccessMsg(null), 2500);
@@ -199,7 +269,7 @@ const AdminUpload = () => {
           htmlFile: aiHtml,
           coverFile: aiCover,
         });
-        setSuccessMsg(`AI赋能：上传成功！数据已写入数据库 (ID: ${insertedData?.id?.substring(0, 8)}...)`);
+        setSuccessMsg(`上传成功！(ID: ${insertedData?.id?.substring(0, 8)}...)`);
         setAiForm({ ...aiForm, title: '', description: '' });
         setAiHtml(null);
         setAiCover(null);
@@ -218,7 +288,7 @@ const AdminUpload = () => {
           htmlFile: toolsHtml,
           coverFile: toolsCover,
         });
-        setSuccessMsg(`互动工具：上传成功！数据已写入数据库 (ID: ${insertedData?.id?.substring(0, 8)}...)`);
+        setSuccessMsg(`上传成功！(ID: ${insertedData?.id?.substring(0, 8)}...)`);
         setToolsForm({ title: '', description: '' });
         setToolsHtml(null);
         setToolsCover(null);
@@ -227,7 +297,6 @@ const AdminUpload = () => {
         return;
       }
 
-      // teaching docs
       if (!teachingFile) throw new Error('请选择要上传的文档文件');
       const insertedData = await uploadTeachingDoc({
         title: teachingForm.title,
@@ -235,24 +304,150 @@ const AdminUpload = () => {
         zone: teachingForm.zone,
         file: teachingFile,
       });
-      setSuccessMsg(`教学专区：上传成功！数据已写入数据库 (ID: ${insertedData?.id?.substring(0, 8)}...)`);
+      setSuccessMsg(`上传成功！(ID: ${insertedData?.id?.substring(0, 8)}...)`);
       setTeachingForm({ ...teachingForm, title: '', description: '' });
       setTeachingFile(null);
       resetSuccessLater();
     } catch (err: any) {
-      console.error('上传错误详情:', err);
-      const errorMsg = err?.message || '上传失败';
-      // 如果是数据库错误，提供更详细的提示
-      if (errorMsg.includes('数据库写入失败') || errorMsg.includes('permission') || errorMsg.includes('RLS')) {
-        setError(`${errorMsg}\n\n💡 提示：请检查 Supabase RLS 策略是否允许插入操作`);
-      } else {
-        setError(errorMsg);
-      }
+      console.error('上传错误:', err);
+      setError(err?.message || '上传失败');
     } finally {
       setLoading(false);
     }
   };
 
+  // Delete handler
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+
+    try {
+      if (deleteTarget.type === 'resource') {
+        const item = deleteTarget.item as Resource;
+        
+        // Delete from storage if file_path exists
+        if (item.file_path) {
+          const urlObj = new URL(item.file_path);
+          const pathParts = urlObj.pathname.split('/');
+          const storageKey = pathParts.slice(-2).join('/'); // e.g., "apps/xxx.html"
+          await supabase.storage.from('ai-apps').remove([storageKey]);
+        }
+        
+        // Delete cover image
+        if (item.image_url && item.image_url.includes('ai-apps')) {
+          const urlObj = new URL(item.image_url);
+          const pathParts = urlObj.pathname.split('/');
+          const storageKey = pathParts.slice(-2).join('/');
+          await supabase.storage.from('ai-apps').remove([storageKey]);
+        }
+
+        // Delete from database
+        const { error } = await supabase.from('resources').delete().eq('id', item.id);
+        if (error) throw error;
+        
+        setResources(prev => prev.filter(r => r.id !== item.id));
+      } else {
+        const item = deleteTarget.item as TeachingResource;
+        
+        // Delete from storage
+        if (item.file_url) {
+          const urlObj = new URL(item.file_url);
+          const pathParts = urlObj.pathname.split('/');
+          const storageKey = pathParts.slice(-2).join('/');
+          await supabase.storage.from('teaching').remove([storageKey]);
+        }
+
+        const { error } = await supabase.from('teaching_resources').delete().eq('id', item.id);
+        if (error) throw error;
+        
+        setTeachingResources(prev => prev.filter(r => r.id !== item.id));
+      }
+
+      setSuccessMsg('删除成功！');
+      resetSuccessLater();
+    } catch (err: any) {
+      console.error('删除失败:', err);
+      setError(err?.message || '删除失败');
+    } finally {
+      setDeleting(false);
+      setDeleteTarget(null);
+    }
+  };
+
+  // Edit handler - open modal
+  const openEditModal = (type: 'resource' | 'teaching', item: Resource | TeachingResource) => {
+    setEditTarget({ type, item });
+    if (type === 'resource') {
+      const r = item as Resource;
+      setEditForm({
+        title: r.title,
+        description: r.description,
+        category: r.category,
+        grade: r.grade,
+      });
+    } else {
+      const t = item as TeachingResource;
+      setEditForm({
+        title: t.title,
+        description: t.description,
+        zone: t.zone,
+      });
+    }
+  };
+
+  // Save edit
+  const handleSaveEdit = async () => {
+    if (!editTarget) return;
+    setSaving(true);
+
+    try {
+      if (editTarget.type === 'resource') {
+        const { error } = await supabase
+          .from('resources')
+          .update({
+            title: editForm.title,
+            description: editForm.description,
+            category: editForm.category,
+            grade: editForm.grade,
+          })
+          .eq('id', editTarget.item.id);
+        if (error) throw error;
+
+        setResources(prev => prev.map(r =>
+          r.id === editTarget.item.id
+            ? { ...r, ...editForm }
+            : r
+        ));
+      } else {
+        const { error } = await supabase
+          .from('teaching_resources')
+          .update({
+            title: editForm.title,
+            description: editForm.description,
+            zone: editForm.zone,
+          })
+          .eq('id', editTarget.item.id);
+        if (error) throw error;
+
+        setTeachingResources(prev => prev.map(r =>
+          r.id === editTarget.item.id
+            ? { ...r, ...editForm }
+            : r
+        ));
+      }
+
+      setSuccessMsg('保存成功！');
+      resetSuccessLater();
+      setEditTarget(null);
+    } catch (err: any) {
+      console.error('保存失败:', err);
+      setError(err?.message || '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Login screen
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
@@ -266,16 +461,14 @@ const AdminUpload = () => {
           <p className="text-center text-slate-400 mb-8 text-sm">请输入访问密码以继续</p>
           
           <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-800 focus:outline-none transition-all"
-                placeholder="访问密码"
-                autoFocus
-              />
-            </div>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-800 focus:outline-none transition-all"
+              placeholder="访问密码"
+              autoFocus
+            />
             {error && (
               <div className="flex items-center gap-2 text-red-500 text-sm bg-red-50 p-3 rounded-lg">
                 <AlertCircle className="w-4 h-4" />
@@ -296,7 +489,7 @@ const AdminUpload = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 p-6 lg:p-12">
-      <div className="max-w-4xl mx-auto">
+      <div className="max-w-5xl mx-auto">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-4">
@@ -307,8 +500,8 @@ const AdminUpload = () => {
               <ArrowLeft className="w-5 h-5 text-slate-600" />
             </button>
             <div>
-              <h1 className="text-2xl font-bold text-slate-800">管理员上传后台</h1>
-              <p className="text-xs text-slate-400 mt-1">{header.desc}</p>
+              <h1 className="text-2xl font-bold text-slate-800">管理员后台</h1>
+              <p className="text-xs text-slate-400 mt-1">上传、编辑、删除资源</p>
             </div>
           </div>
           <button
@@ -316,6 +509,32 @@ const AdminUpload = () => {
             className="text-slate-400 hover:text-slate-600 text-sm font-medium"
           >
             退出登录
+          </button>
+        </div>
+
+        {/* Mode Toggle */}
+        <div className="grid grid-cols-2 gap-2 mb-6">
+          <button
+            onClick={() => { setMode('upload'); setError(null); setSuccessMsg(null); }}
+            className={`p-4 rounded-2xl border transition-all flex items-center justify-center gap-3 ${
+              mode === 'upload'
+                ? 'bg-white border-emerald-200 shadow-md'
+                : 'bg-white/60 border-slate-200 hover:bg-white'
+            }`}
+          >
+            <Plus className={`w-5 h-5 ${mode === 'upload' ? 'text-emerald-600' : 'text-slate-400'}`} />
+            <span className={`font-bold ${mode === 'upload' ? 'text-slate-800' : 'text-slate-600'}`}>上传新资源</span>
+          </button>
+          <button
+            onClick={() => { setMode('manage'); setError(null); setSuccessMsg(null); }}
+            className={`p-4 rounded-2xl border transition-all flex items-center justify-center gap-3 ${
+              mode === 'manage'
+                ? 'bg-white border-blue-200 shadow-md'
+                : 'bg-white/60 border-slate-200 hover:bg-white'
+            }`}
+          >
+            <FolderOpen className={`w-5 h-5 ${mode === 'manage' ? 'text-blue-600' : 'text-slate-400'}`} />
+            <span className={`font-bold ${mode === 'manage' ? 'text-slate-800' : 'text-slate-600'}`}>管理资源</span>
           </button>
         </div>
 
@@ -356,148 +575,160 @@ const AdminUpload = () => {
           </button>
         </div>
 
-        {/* Form Card */}
-        <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-100">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-lg font-bold text-slate-800">{header.title}</h2>
-            {successMsg && (
-              <div className="flex items-center gap-2 text-emerald-700 bg-emerald-50 px-3 py-2 rounded-xl text-sm">
-                <CheckCircle className="w-4 h-4" />
-                {successMsg}
-              </div>
-            )}
+        {/* Success/Error Messages */}
+        {successMsg && (
+          <div className="mb-4 flex items-center gap-2 text-emerald-700 bg-emerald-50 px-4 py-3 rounded-xl text-sm border border-emerald-100">
+            <CheckCircle className="w-4 h-4" />
+            {successMsg}
           </div>
+        )}
+        {error && (
+          <div className="mb-4 flex items-center gap-2 text-red-600 bg-red-50 px-4 py-3 rounded-xl text-sm border border-red-100">
+            <AlertCircle className="w-4 h-4" />
+            {error}
+          </div>
+        )}
 
-          <form onSubmit={onSubmit} className="space-y-6">
-            {/* Common fields */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="space-y-2 md:col-span-2">
-                <label className="text-sm font-bold text-slate-700">标题</label>
-                <input
-                  type="text"
-                  required
-                  value={section === 'ai' ? aiForm.title : section === 'tools' ? toolsForm.title : teachingForm.title}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (section === 'ai') setAiForm({ ...aiForm, title: v });
-                    else if (section === 'tools') setToolsForm({ ...toolsForm, title: v });
-                    else setTeachingForm({ ...teachingForm, title: v });
-                  }}
-                  className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:outline-none"
-                  placeholder="请输入标题"
-                />
+        {/* Upload Mode */}
+        {mode === 'upload' && (
+          <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-100">
+            <div className="flex items-center gap-3 mb-6">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                section === 'ai' ? 'bg-violet-100' : section === 'tools' ? 'bg-amber-100' : 'bg-sky-100'
+              }`}>
+                {section === 'ai' && <Sparkles className="w-5 h-5 text-violet-600" />}
+                {section === 'tools' && <Zap className="w-5 h-5 text-amber-600" />}
+                {section === 'teaching' && <GraduationCap className="w-5 h-5 text-sky-600" />}
               </div>
-
-              <div className="space-y-2 md:col-span-2">
-                <label className="text-sm font-bold text-slate-700">描述</label>
-                <textarea
-                  required
-                  value={
-                    section === 'ai'
-                      ? aiForm.description
-                      : section === 'tools'
-                        ? toolsForm.description
-                        : teachingForm.description
-                  }
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (section === 'ai') setAiForm({ ...aiForm, description: v });
-                    else if (section === 'tools') setToolsForm({ ...toolsForm, description: v });
-                    else setTeachingForm({ ...teachingForm, description: v });
-                  }}
-                  className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:outline-none h-24 resize-none"
-                  placeholder="简要描述..."
-                />
+              <div>
+                <h2 className="text-lg font-bold text-slate-800">{header.title}</h2>
+                <p className="text-xs text-slate-400">{header.desc}</p>
               </div>
             </div>
 
-            {/* Section specific */}
-            {section === 'ai' && (
-              <>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-2">
-                    <label className="text-sm font-bold text-slate-700">分类</label>
-                    <select
-                      value={aiForm.category}
-                      onChange={(e) => setAiForm({ ...aiForm, category: e.target.value as any })}
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white"
-                    >
-                      {AI_CATEGORIES.map((c) => (
-                        <option key={c} value={c}>{c}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-bold text-slate-700">年级</label>
-                    <select
-                      value={aiForm.grade}
-                      onChange={(e) => setAiForm({ ...aiForm, grade: e.target.value as any })}
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white"
-                    >
-                      {GRADES.map((g) => (
-                        <option key={g} value={g}>{g}</option>
-                      ))}
-                    </select>
-                  </div>
+            <form onSubmit={onSubmit} className="space-y-6">
+              {/* Common fields */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-2 md:col-span-2">
+                  <label className="text-sm font-bold text-slate-700">标题</label>
+                  <input
+                    type="text"
+                    required
+                    value={section === 'ai' ? aiForm.title : section === 'tools' ? toolsForm.title : teachingForm.title}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (section === 'ai') setAiForm({ ...aiForm, title: v });
+                      else if (section === 'tools') setToolsForm({ ...toolsForm, title: v });
+                      else setTeachingForm({ ...teachingForm, title: v });
+                    }}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:outline-none"
+                    placeholder="请输入标题"
+                  />
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-6 border-t border-slate-100">
-                  <div className="space-y-2">
-                    <label className="text-sm font-bold text-slate-700 flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-violet-500"></span>
-                      HTML 文件
-                    </label>
-                    <input
-                      type="file"
-                      accept=".html,.htm"
-                      required
-                      onChange={(e) => setAiHtml(e.target.files?.[0] || null)}
-                      className="block w-full text-sm text-slate-500 file:mr-4 file:py-3 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-violet-50 file:text-violet-700 hover:file:bg-violet-100 cursor-pointer border border-slate-200 rounded-xl"
-                    />
+                <div className="space-y-2 md:col-span-2">
+                  <label className="text-sm font-bold text-slate-700">描述</label>
+                  <textarea
+                    required
+                    value={section === 'ai' ? aiForm.description : section === 'tools' ? toolsForm.description : teachingForm.description}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (section === 'ai') setAiForm({ ...aiForm, description: v });
+                      else if (section === 'tools') setToolsForm({ ...toolsForm, description: v });
+                      else setTeachingForm({ ...teachingForm, description: v });
+                    }}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:outline-none h-24 resize-none"
+                    placeholder="简要描述..."
+                  />
+                </div>
+              </div>
+
+              {/* Section specific */}
+              {section === 'ai' && (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                      <label className="text-sm font-bold text-slate-700">分类</label>
+                      <select
+                        value={aiForm.category}
+                        onChange={(e) => setAiForm({ ...aiForm, category: e.target.value as any })}
+                        className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white"
+                      >
+                        {AI_CATEGORIES.map((c) => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-bold text-slate-700">年级</label>
+                      <select
+                        value={aiForm.grade}
+                        onChange={(e) => setAiForm({ ...aiForm, grade: e.target.value as any })}
+                        className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white"
+                      >
+                        {GRADES.map((g) => (
+                          <option key={g} value={g}>{g}</option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-bold text-slate-700 flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-fuchsia-500"></span>
-                      封面图片
-                      <span className="text-xs font-normal text-slate-400 flex items-center gap-1">
-                        <ImageDown className="w-3 h-3" />
-                        自动压缩 WebP
-                      </span>
-                    </label>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      required
-                      onChange={async (e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          setAiCover(file);
-                          try {
-                            const { blob } = await compressImage(file, { maxWidth: 640, quality: 0.85, format: 'webp' });
-                            setAiCompress({ original: file.size, compressed: blob.size });
-                          } catch {
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-6 border-t border-slate-100">
+                    <div className="space-y-2">
+                      <label className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-violet-500"></span>
+                        HTML 文件
+                      </label>
+                      <input
+                        type="file"
+                        accept=".html,.htm"
+                        required
+                        onChange={(e) => setAiHtml(e.target.files?.[0] || null)}
+                        className="block w-full text-sm text-slate-500 file:mr-4 file:py-3 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-violet-50 file:text-violet-700 hover:file:bg-violet-100 cursor-pointer border border-slate-200 rounded-xl"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-fuchsia-500"></span>
+                        封面图片
+                        <span className="text-xs font-normal text-slate-400 flex items-center gap-1">
+                          <ImageDown className="w-3 h-3" />
+                          自动压缩
+                        </span>
+                      </label>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        required
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            setAiCover(file);
+                            try {
+                              const { blob } = await compressImage(file, { maxWidth: 640, quality: 0.85, format: 'webp' });
+                              setAiCompress({ original: file.size, compressed: blob.size });
+                            } catch {
+                              setAiCompress(null);
+                            }
+                          } else {
+                            setAiCover(null);
                             setAiCompress(null);
                           }
-                        } else {
-                          setAiCover(null);
-                          setAiCompress(null);
-                        }
-                      }}
-                      className="block w-full text-sm text-slate-500 file:mr-4 file:py-3 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-fuchsia-50 file:text-fuchsia-700 hover:file:bg-fuchsia-100 cursor-pointer border border-slate-200 rounded-xl"
-                    />
-                    {aiCompress && (
-                      <div className="flex items-center gap-2 text-xs text-emerald-700 bg-emerald-50 px-3 py-2 rounded-lg">
-                        <ImageDown className="w-3.5 h-3.5" />
-                        {formatFileSize(aiCompress.original)} → {formatFileSize(aiCompress.compressed)}
-                      </div>
-                    )}
+                        }}
+                        className="block w-full text-sm text-slate-500 file:mr-4 file:py-3 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-fuchsia-50 file:text-fuchsia-700 hover:file:bg-fuchsia-100 cursor-pointer border border-slate-200 rounded-xl"
+                      />
+                      {aiCompress && (
+                        <div className="flex items-center gap-2 text-xs text-emerald-700 bg-emerald-50 px-3 py-2 rounded-lg">
+                          <ImageDown className="w-3.5 h-3.5" />
+                          {formatFileSize(aiCompress.original)} → {formatFileSize(aiCompress.compressed)}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              </>
-            )}
+                </>
+              )}
 
-            {section === 'tools' && (
-              <>
+              {section === 'tools' && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-6 border-t border-slate-100">
                   <div className="space-y-2">
                     <label className="text-sm font-bold text-slate-700 flex items-center gap-2">
@@ -518,7 +749,7 @@ const AdminUpload = () => {
                       封面图片
                       <span className="text-xs font-normal text-slate-400 flex items-center gap-1">
                         <ImageDown className="w-3 h-3" />
-                        自动压缩 WebP
+                        自动压缩
                       </span>
                     </label>
                     <input
@@ -550,11 +781,9 @@ const AdminUpload = () => {
                     )}
                   </div>
                 </div>
-              </>
-            )}
+              )}
 
-            {section === 'teaching' && (
-              <>
+              {section === 'teaching' && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div className="space-y-2">
                     <label className="text-sm font-bold text-slate-700">区域</label>
@@ -582,38 +811,314 @@ const AdminUpload = () => {
                     />
                   </div>
                 </div>
-              </>
-            )}
+              )}
 
-            {/* Submit */}
-            <div className="pt-2">
+              {/* Submit */}
+              <div className="pt-2">
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full bg-slate-900 text-white font-bold py-4 rounded-xl hover:bg-slate-800 transition-all shadow-lg shadow-slate-900/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {loading ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      正在上传...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-5 h-5" />
+                      确认上传
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {/* Manage Mode */}
+        {mode === 'manage' && (
+          <div className="bg-white rounded-3xl p-8 shadow-sm border border-slate-100">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                  section === 'ai' ? 'bg-violet-100' : section === 'tools' ? 'bg-amber-100' : 'bg-sky-100'
+                }`}>
+                  {section === 'ai' && <Sparkles className="w-5 h-5 text-violet-600" />}
+                  {section === 'tools' && <Zap className="w-5 h-5 text-amber-600" />}
+                  {section === 'teaching' && <GraduationCap className="w-5 h-5 text-sky-600" />}
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-slate-800">{header.title} 资源列表</h2>
+                  <p className="text-xs text-slate-400">
+                    共 {section === 'teaching' ? teachingResources.length : resources.length} 个资源
+                  </p>
+                </div>
+              </div>
               <button
-                type="submit"
-                disabled={loading}
-                className="w-full bg-slate-900 text-white font-bold py-4 rounded-xl hover:bg-slate-800 transition-all shadow-lg shadow-slate-900/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                onClick={fetchResources}
+                className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 transition-colors"
+                title="刷新"
               >
-                {loading ? (
-                  <>
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                    正在上传...
-                  </>
-                ) : (
-                  <>
-                    <Upload className="w-5 h-5" />
-                    确认上传
-                  </>
-                )}
+                <Loader2 className={`w-4 h-4 text-slate-600 ${listLoading ? 'animate-spin' : ''}`} />
               </button>
-              {error && (
-                <div className="mt-4 flex items-center gap-2 text-red-500 text-sm bg-red-50 p-3 rounded-lg">
-                  <AlertCircle className="w-4 h-4" />
-                  {error}
+            </div>
+
+            {listLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="w-8 h-8 animate-spin text-slate-400" />
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {/* Resources list */}
+                {section !== 'teaching' && resources.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center gap-4 p-4 rounded-2xl bg-slate-50 border border-slate-100 hover:border-slate-200 transition-all group"
+                  >
+                    {item.image_url && (
+                      <img
+                        src={item.image_url}
+                        alt={item.title}
+                        className="w-16 h-16 rounded-xl object-cover flex-shrink-0"
+                      />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <h3 className="font-bold text-slate-800 truncate">{item.title}</h3>
+                      <p className="text-xs text-slate-500 truncate">{item.description}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-slate-200 text-slate-600">{item.category}</span>
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-slate-200 text-slate-600">{item.grade}</span>
+                        {item.resource_type && (
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-violet-100 text-violet-600">{item.resource_type}</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => openEditModal('resource', item)}
+                        className="p-2 rounded-xl bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors"
+                        title="编辑"
+                      >
+                        <Edit3 className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => setDeleteTarget({ type: 'resource', item })}
+                        className="p-2 rounded-xl bg-red-50 text-red-600 hover:bg-red-100 transition-colors"
+                        title="删除"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+
+                {/* Teaching resources list */}
+                {section === 'teaching' && teachingResources.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center gap-4 p-4 rounded-2xl bg-slate-50 border border-slate-100 hover:border-slate-200 transition-all group"
+                  >
+                    <div className="w-16 h-16 rounded-xl bg-sky-100 flex items-center justify-center flex-shrink-0">
+                      <FileText className="w-8 h-8 text-sky-600" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="font-bold text-slate-800 truncate">{item.title}</h3>
+                      <p className="text-xs text-slate-500 truncate">{item.description}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-sky-100 text-sky-600">
+                          {TEACHING_ZONES.find(z => z.id === item.zone)?.label || item.zone}
+                        </span>
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-slate-200 text-slate-600 uppercase">
+                          {item.file_type}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => openEditModal('teaching', item)}
+                        className="p-2 rounded-xl bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors"
+                        title="编辑"
+                      >
+                        <Edit3 className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => setDeleteTarget({ type: 'teaching', item })}
+                        className="p-2 rounded-xl bg-red-50 text-red-600 hover:bg-red-100 transition-colors"
+                        title="删除"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+
+                {/* Empty state */}
+                {((section !== 'teaching' && resources.length === 0) || (section === 'teaching' && teachingResources.length === 0)) && (
+                  <div className="text-center py-12">
+                    <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center mx-auto mb-4">
+                      <FolderOpen className="w-8 h-8 text-slate-400" />
+                    </div>
+                    <p className="text-slate-500">暂无资源</p>
+                    <button
+                      onClick={() => setMode('upload')}
+                      className="mt-4 text-sm text-blue-600 hover:underline"
+                    >
+                      去上传第一个资源
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Delete Confirmation Modal */}
+      {deleteTarget && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl">
+            <div className="flex items-center gap-4 mb-6">
+              <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
+                <Trash2 className="w-6 h-6 text-red-600" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-slate-800">确认删除</h3>
+                <p className="text-sm text-slate-500">此操作不可恢复</p>
+              </div>
+            </div>
+            <div className="bg-slate-50 rounded-xl p-4 mb-6">
+              <p className="font-medium text-slate-800">{deleteTarget.item.title}</p>
+              <p className="text-sm text-slate-500 truncate">{deleteTarget.item.description}</p>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setDeleteTarget(null)}
+                className="flex-1 py-3 rounded-xl border border-slate-200 font-bold text-slate-600 hover:bg-slate-50 transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="flex-1 py-3 rounded-xl bg-red-600 text-white font-bold hover:bg-red-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                {deleting ? '删除中...' : '确认删除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Modal */}
+      {editTarget && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl p-8 max-w-lg w-full shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center">
+                  <Pencil className="w-6 h-6 text-blue-600" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-800">编辑资源</h3>
+                  <p className="text-sm text-slate-500">修改资源信息</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setEditTarget(null)}
+                className="p-2 rounded-xl hover:bg-slate-100 transition-colors"
+              >
+                <X className="w-5 h-5 text-slate-400" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-700">标题</label>
+                <input
+                  type="text"
+                  value={editForm.title || ''}
+                  onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
+                  className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-bold text-slate-700">描述</label>
+                <textarea
+                  value={editForm.description || ''}
+                  onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+                  className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 focus:outline-none h-24 resize-none"
+                />
+              </div>
+
+              {editTarget.type === 'resource' && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-bold text-slate-700">分类</label>
+                    <select
+                      value={editForm.category || ''}
+                      onChange={(e) => setEditForm({ ...editForm, category: e.target.value })}
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white"
+                    >
+                      {AI_CATEGORIES.map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                      <option value="赋能教学">赋能教学</option>
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-bold text-slate-700">年级</label>
+                    <select
+                      value={editForm.grade || ''}
+                      onChange={(e) => setEditForm({ ...editForm, grade: e.target.value })}
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white"
+                    >
+                      {GRADES.map((g) => (
+                        <option key={g} value={g}>{g}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {editTarget.type === 'teaching' && (
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700">区域</label>
+                  <select
+                    value={editForm.zone || ''}
+                    onChange={(e) => setEditForm({ ...editForm, zone: e.target.value })}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white"
+                  >
+                    {TEACHING_ZONES.map((z) => (
+                      <option key={z.id} value={z.id}>{z.label}</option>
+                    ))}
+                  </select>
                 </div>
               )}
             </div>
-          </form>
+
+            <div className="flex gap-3 mt-8">
+              <button
+                onClick={() => setEditTarget(null)}
+                className="flex-1 py-3 rounded-xl border border-slate-200 font-bold text-slate-600 hover:bg-slate-50 transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleSaveEdit}
+                disabled={saving}
+                className="flex-1 py-3 rounded-xl bg-blue-600 text-white font-bold hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                {saving ? '保存中...' : '保存修改'}
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };
