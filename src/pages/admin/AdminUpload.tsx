@@ -102,7 +102,7 @@ const AdminUpload = () => {
     grade: string;
     htmlFile: File;
     coverFile: File;
-  }) => {
+  }): Promise<any> => {
     const { title, description, category, grade, htmlFile, coverFile } = params;
 
     // 1) HTML -> ai-apps/apps/
@@ -125,7 +125,7 @@ const AdminUpload = () => {
     const { data: imgPub } = supabase.storage.from('ai-apps').getPublicUrl(imgKey);
 
     // 3) insert -> resources
-    const { error: dbError } = await supabase.from('resources').insert({
+    const { data: insertedData, error: dbError } = await supabase.from('resources').insert({
       title,
       description,
       category,
@@ -134,8 +134,12 @@ const AdminUpload = () => {
       file_path: htmlPub.publicUrl,
       resource_type: 'html',
       route_path: null,
-    });
-    if (dbError) throw dbError;
+    }).select();
+    if (dbError) {
+      console.error('数据库插入错误:', dbError);
+      throw new Error(`数据库写入失败: ${dbError.message || '未知错误'}`);
+    }
+    return insertedData?.[0]; // 返回插入的数据
   };
 
   const uploadTeachingDoc = async (params: {
@@ -143,7 +147,7 @@ const AdminUpload = () => {
     description: string;
     zone: string;
     file: File;
-  }) => {
+  }): Promise<any> => {
     const { title, description, zone, file } = params;
     const ext = (file.name.split('.').pop() || '').toLowerCase();
     const key = `${zone}/${getSafeFileName(file.name)}`;
@@ -160,14 +164,18 @@ const AdminUpload = () => {
     if (upErr) throw upErr;
 
     const { data: pub } = supabase.storage.from('teaching').getPublicUrl(key);
-    const { error: dbErr } = await supabase.from('teaching_resources').insert({
+    const { data: insertedData, error: dbErr } = await supabase.from('teaching_resources').insert({
       title,
       description,
       zone,
       file_url: pub.publicUrl,
       file_type: ext,
-    });
-    if (dbErr) throw dbErr;
+    }).select();
+    if (dbErr) {
+      console.error('数据库插入错误:', dbErr);
+      throw new Error(`数据库写入失败: ${dbErr.message || '未知错误'}`);
+    }
+    return insertedData?.[0]; // 返回插入的数据
   };
 
   const resetSuccessLater = () => setTimeout(() => setSuccessMsg(null), 2500);
@@ -181,7 +189,7 @@ const AdminUpload = () => {
     try {
       if (section === 'ai') {
         if (!aiHtml || !aiCover) throw new Error('请同时选择 HTML 文件和封面图片');
-        await uploadHtmlWithCover({
+        const insertedData = await uploadHtmlWithCover({
           title: aiForm.title,
           description: aiForm.description,
           category: aiForm.category,
@@ -189,7 +197,7 @@ const AdminUpload = () => {
           htmlFile: aiHtml,
           coverFile: aiCover,
         });
-        setSuccessMsg('AI赋能：上传成功');
+        setSuccessMsg(`AI赋能：上传成功！数据已写入数据库 (ID: ${insertedData?.id?.substring(0, 8)}...)`);
         setAiForm({ ...aiForm, title: '', description: '' });
         setAiHtml(null);
         setAiCover(null);
@@ -200,7 +208,7 @@ const AdminUpload = () => {
 
       if (section === 'tools') {
         if (!toolsHtml || !toolsCover) throw new Error('请同时选择 HTML 文件和封面图片');
-        await uploadHtmlWithCover({
+        const insertedData = await uploadHtmlWithCover({
           title: toolsForm.title,
           description: toolsForm.description,
           category: '赋能教学',
@@ -208,7 +216,7 @@ const AdminUpload = () => {
           htmlFile: toolsHtml,
           coverFile: toolsCover,
         });
-        setSuccessMsg('互动工具：上传成功');
+        setSuccessMsg(`互动工具：上传成功！数据已写入数据库 (ID: ${insertedData?.id?.substring(0, 8)}...)`);
         setToolsForm({ title: '', description: '' });
         setToolsHtml(null);
         setToolsCover(null);
@@ -219,18 +227,25 @@ const AdminUpload = () => {
 
       // teaching docs
       if (!teachingFile) throw new Error('请选择要上传的文档文件');
-      await uploadTeachingDoc({
+      const insertedData = await uploadTeachingDoc({
         title: teachingForm.title,
         description: teachingForm.description,
         zone: teachingForm.zone,
         file: teachingFile,
       });
-      setSuccessMsg('教学专区：上传成功');
+      setSuccessMsg(`教学专区：上传成功！数据已写入数据库 (ID: ${insertedData?.id?.substring(0, 8)}...)`);
       setTeachingForm({ ...teachingForm, title: '', description: '' });
       setTeachingFile(null);
       resetSuccessLater();
     } catch (err: any) {
-      setError(err?.message || '上传失败');
+      console.error('上传错误详情:', err);
+      const errorMsg = err?.message || '上传失败';
+      // 如果是数据库错误，提供更详细的提示
+      if (errorMsg.includes('数据库写入失败') || errorMsg.includes('permission') || errorMsg.includes('RLS')) {
+        setError(`${errorMsg}\n\n💡 提示：请检查 Supabase RLS 策略是否允许插入操作`);
+      } else {
+        setError(errorMsg);
+      }
     } finally {
       setLoading(false);
     }
