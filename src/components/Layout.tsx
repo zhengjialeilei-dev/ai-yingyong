@@ -4,9 +4,10 @@ import { Outlet } from 'react-router-dom';
 
 const Layout = () => {
   return (
-    <div className="min-h-screen flex p-4 gap-6 relative overflow-hidden">
+    <div className="min-h-screen flex flex-col md:flex-row md:p-4 md:gap-6 relative overflow-hidden">
       <Sidebar />
-      <main className="flex-1 min-h-[calc(100vh-2rem)] rounded-3xl bg-white/40 backdrop-blur-sm border border-white/20 shadow-soft overflow-y-auto relative">
+      {/* Main content area - adjust padding for mobile header and bottom nav */}
+      <main className="flex-1 min-h-screen md:min-h-[calc(100vh-2rem)] md:rounded-3xl bg-white/40 backdrop-blur-sm md:border md:border-white/20 md:shadow-soft overflow-y-auto relative pt-[60px] pb-[80px] md:pt-0 md:pb-0">
         <Outlet />
       </main>
     </div>
