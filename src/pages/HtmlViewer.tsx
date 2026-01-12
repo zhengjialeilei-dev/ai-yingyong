@@ -61,10 +61,23 @@ const HtmlViewer = () => {
       setMode('srcdoc');
       setHtml(buildSrcDoc(text));
     } catch (e: any) {
-      // 常见：CORS / 网络错误。此时回退为 iframe src 直连
-      setMode('src');
-      setHtml(null);
-      setLoadError(e?.message || '加载失败');
+      // 线上常见：CORS / 网络错误。先尝试走本站 /api/html-proxy 再渲染 srcDoc；失败才回退为 src 直连
+      try {
+        const proxyUrl = `/api/html-proxy?url=${encodeURIComponent(url)}`;
+        const res2 = await fetch(proxyUrl);
+        if (!res2.ok) throw new Error(`代理加载失败：${res2.status} ${res2.statusText}`);
+        const text2 = await res2.text();
+        const looksLikeHtml2 = /<!doctype html|<html[\s>]/i.test(text2);
+        if (!looksLikeHtml2) throw new Error('代理返回内容不是 HTML');
+
+        setMode('srcdoc');
+        setHtml(buildSrcDoc(text2));
+        setLoadError(null);
+      } catch (e2: any) {
+        setMode('src');
+        setHtml(null);
+        setLoadError(e2?.message || e?.message || '加载失败');
+      }
     } finally {
       setLoading(false);
     }
