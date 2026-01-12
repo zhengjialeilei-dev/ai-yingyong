@@ -232,13 +232,13 @@ const AdminUpload = () => {
     else if (ext === 'doc' || ext === 'docx') contentType = 'application/msword';
     else if (ext === 'ppt' || ext === 'pptx') contentType = 'application/vnd.ms-powerpoint';
 
-    const { error: upErr } = await supabase.storage.from('teaching').upload(key, file, {
+    const { error: upErr } = await supabase.storage.from('TEACHING').upload(key, file, {
       contentType,
       cacheControl: '3600',
     });
     if (upErr) throw upErr;
 
-    const { data: pub } = supabase.storage.from('teaching').getPublicUrl(key);
+    const { data: pub } = supabase.storage.from('TEACHING').getPublicUrl(key);
     const { data: insertedData, error: dbErr } = await supabase.from('teaching_resources').insert({
       title,
       description,
@@ -354,7 +354,7 @@ const AdminUpload = () => {
           const urlObj = new URL(item.file_url);
           const pathParts = urlObj.pathname.split('/');
           const storageKey = pathParts.slice(-2).join('/');
-          await supabase.storage.from('teaching').remove([storageKey]);
+          await supabase.storage.from('TEACHING').remove([storageKey]);
         }
 
         const { error } = await supabase.from('teaching_resources').delete().eq('id', item.id);
